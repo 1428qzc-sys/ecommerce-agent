@@ -29,3 +29,6 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Stash (待提交的文件)
+.stash/
