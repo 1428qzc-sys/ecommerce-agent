@@ -1,6 +1,5 @@
 """
 Agent State — 定义 LangGraph 中流转的数据结构
-类比 Java: 相当于一个 DTO / Context 对象，在图的各个节点之间传递
 """
 from typing import Any, Dict, Optional
 from typing_extensions import TypedDict

@@ -1,6 +1,5 @@
 """
 FastAPI 入口 — 应用启动文件
-类比 Java: 相当于 Spring Boot 的 @SpringBootApplication main 方法
 """
 import logging
 from fastapi import FastAPI

@@ -18,10 +18,9 @@ class ReturnInfo:
 class ReturnsService:
     def get_policy(self) -> str:
         return (
-            "Our return policy allows returns within 14 days of delivery. "
-            "Items must be in original condition with tags attached. "
-            "Refunds are processed within 5-7 business days after we receive the returned item. "
-            "Free return shipping is provided for defective items."
+            "本店支持签收后14天内退货。商品需保持原样，吊牌未拆。"
+            "退款将在收到退货后5-7个工作日内处理。"
+            "质量问题商品提供免费退货物流。"
         )
 
     def create_return(self, order_id: str, reason: str, refund_amount: float) -> ReturnInfo:

@@ -1,6 +1,5 @@
 """
 Database — SQLite 数据库初始化 + 种子数据
-类比 Java: 相当于 Spring Boot 的 schema.sql + data.sql
 """
 import os
 from sqlalchemy import create_engine, Column, String, Float, DateTime, ForeignKey, Text
@@ -134,21 +133,21 @@ def _seed():
 
     # 物流信息
     shipments = [
-        Shipment(tracking_number="FDX-78901234", order_id="ORD-1001", carrier="FedEx",
-                 status="delivered", location="Delivered at front door"),
-        Shipment(tracking_number="UPS-45678901", order_id="ORD-1002", carrier="UPS",
+        Shipment(tracking_number="SF-78901234", order_id="ORD-1001", carrier="顺丰速运",
+                 status="delivered", location="已放至快递柜"),
+        Shipment(tracking_number="ZT-45678901", order_id="ORD-1002", carrier="中通快递",
                  status="in_transit", estimated_delivery=now + timedelta(days=2),
-                 location="In transit - Regional sorting facility"),
-        Shipment(tracking_number="USPS-11223344", order_id="ORD-1005", carrier="USPS",
-                 status="delivered", location="Delivered to mailbox"),
-        Shipment(tracking_number="FDX-55667788", order_id="ORD-1007", carrier="FedEx",
+                 location="运输中 - 已到达杭州转运中心"),
+        Shipment(tracking_number="YT-11223344", order_id="ORD-1005", carrier="圆通速递",
+                 status="delivered", location="已签收，放在门口"),
+        Shipment(tracking_number="SF-55667788", order_id="ORD-1007", carrier="顺丰速运",
                  status="in_transit", estimated_delivery=now + timedelta(days=3),
-                 location="In transit - Out for delivery"),
-        Shipment(tracking_number="UPS-99887766", order_id="ORD-1009", carrier="UPS",
-                 status="delivered", location="Delivered to reception"),
-        Shipment(tracking_number="FDX-33445566", order_id="ORD-1011", carrier="FedEx",
+                 location="运输中 - 派件中"),
+        Shipment(tracking_number="ZT-99887766", order_id="ORD-1009", carrier="中通快递",
+                 status="delivered", location="已签收，前台代收"),
+        Shipment(tracking_number="SF-33445566", order_id="ORD-1011", carrier="顺丰速运",
                  status="in_transit", estimated_delivery=now + timedelta(days=1),
-                 location="In transit - Local facility"),
+                 location="运输中 - 已到达当地网点"),
     ]
     session.add_all(shipments)
 

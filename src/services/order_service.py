@@ -1,6 +1,5 @@
 """
 Order Service — 订单查询与退货判断
-类比 Java: 相当于 OrderService + OrderRepository
 """
 from datetime import datetime, timedelta
 from src.services.database import get_session, Order, OrderItem, Customer
@@ -79,16 +78,16 @@ class OrderService:
         """判断订单是否可退货：已送达 + 14天内"""
         order = self.get_order(order_id)
         if not order:
-            return False, "Order not found"
+            return False, "订单未找到"
         if order.status == "cancelled":
-            return False, "Order was cancelled and cannot be returned"
+            return False, "订单已取消，无法退货"
         if order.status != "delivered":
-            return False, "Order has not been delivered yet"
+            return False, "订单尚未送达，暂不能退货"
         if order.delivery_date:
             days_since = (datetime.utcnow() - order.delivery_date).days
             if days_since > 14:
-                return False, f"Return window (14 days) has expired. Delivered {days_since} days ago."
-        return True, "Eligible for return within 14-day window"
+                return False, f"退货期限（14天）已过期，订单于 {days_since} 天前送达"
+        return True, "符合14天内退货条件"
 
     def get_all_orders(self) -> list[OrderDetail]:
         session = get_session()
