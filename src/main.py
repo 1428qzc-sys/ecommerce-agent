@@ -25,9 +25,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# TODO: 添加 API 路由
-# from src.api.routes import router
-# app.include_router(router)
+from src.api.routes import router
+app.include_router(router)
 
 
 if __name__ == "__main__":
