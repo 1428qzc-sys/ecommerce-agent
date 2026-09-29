@@ -1,6 +1,5 @@
 """
 Pydantic Schemas — FastAPI 的请求/响应数据模型
-类比 Java: 相当于 Controller 层的 @RequestBody / @ResponseBody DTO
 """
 from pydantic import BaseModel, Field
 

@@ -1,10 +1,11 @@
 """
-Agent Nodes — 图中的三个节点实现
+Agent Nodes — 图中的节点实现
 
-三个节点：
+节点：
 1. triage_node  — 意图识别 + 实体提取
-2. tool_node    — 执行工具调用
-3. response_node — 组装最终回复
+2. agent_node   — LLM 自主决策工具调用
+3. tool_executor — 工具执行（LangGraph ToolNode）
+4. response_node — 组装最终回复
 """
 import json
 import re
@@ -12,6 +13,7 @@ import logging
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 
+from langgraph.prebuilt import ToolNode
 from src.config import settings
 from src.agent.state import AgentState
 from src.agent.tools import (
@@ -33,7 +35,17 @@ ALL_TOOLS = [
     lookup_order, lookup_orders_by_email, search_orders,
     track_shipment, get_return_policy, check_return_eligibility, initiate_return,
 ]
-TOOL_MAP = {t.name: t for t in ALL_TOOLS}
+
+# ── 真正的 Tool Calling：让 LLM 自己选工具 ──────────────────
+llm_with_tools = llm.bind_tools(ALL_TOOLS)
+tool_executor = ToolNode(ALL_TOOLS)
+
+
+def agent_node(state: AgentState) -> dict:
+    """Agent 节点：LLM 看到所有消息，自己决定调哪个工具、传什么参数"""
+    response = llm_with_tools.invoke(state["messages"])
+    return {"messages": [response]}
+
 
 # ── 意图识别 Prompt ──────────────────────────────────────────
 TRIAGE_SYSTEM = """你是一个电商客服 Agent 的意图分类器。
@@ -111,83 +123,26 @@ def _fallback_extract(text: str) -> dict:
     return {"intent": intent, "order_id": order_id, "tracking_number": tracking, "customer_email": email}
 
 
-# ── 节点 2: 工具执行 ────────────────────────────────────────
-def tool_node(state: AgentState) -> dict:
-    """根据意图选择工具并执行"""
-    intent = state.get("intent", "general")
-    order_id = state.get("order_id", "")
-    tracking_number = state.get("tracking_number", "")
-    tool_results = {}
 
-    try:
-        if intent == "order_status":
-            if order_id:
-                tool_results["lookup_order"] = lookup_order.invoke({"order_id": order_id})
-            else:
-                tool_results["search_orders"] = "请提供订单号（格式：ORD-XXXX）或您的邮箱地址。"
-
-        elif intent == "shipping_tracking":
-            if tracking_number:
-                tool_results["track_shipment"] = track_shipment.invoke({"tracking_number": tracking_number})
-            else:
-                tool_results["track_shipment"] = "请提供物流单号（格式：XXX-XXXXXXXX）。"
-
-        elif intent == "return_request":
-            if order_id:
-                tool_results["check_return_eligibility"] = check_return_eligibility.invoke({"order_id": order_id})
-            else:
-                tool_results["check_return_eligibility"] = "请提供需要退货的订单号。"
-
-        elif intent == "return_policy":
-            tool_results["get_return_policy"] = get_return_policy.invoke({})
-
-    except Exception as e:
-        logger.error("Tool execution error: %s", e)
-        tool_results["error"] = str(e)
-        return {
-            "tool_results": tool_results,
-            "retry_count": state.get("retry_count", 0) + 1,
-            "error_message": str(e),
-        }
-
-    return {
-        "tool_results": tool_results,
-        "retry_count": 0,
-        "error_message": None,
-    }
-
-
-# ── 节点 3: 回复生成 ────────────────────────────────────────
+# ── 节点 2: 回复生成 ────────────────────────────────────────
 def response_node(state: AgentState) -> dict:
-    """根据工具结果组装最终回复"""
-    intent = state.get("intent", "general")
-    tool_results = state.get("tool_results", {})
-    order_id = state.get("order_id", "")
-    tracking_number = state.get("tracking_number", "")
+    """从 Agent 的消息历史中提取最终回复，同时收集工具调用结果给 API"""
+    messages = state.get("messages", [])
 
-    if intent == "order_status" and "lookup_order" in tool_results:
-        response = f"已为您查询到订单：\n\n{tool_results['lookup_order']}"
+    # 从 messages 里找到最后一条 AI 回复（没有 tool_calls 的那种）
+    final_response = "抱歉，暂时无法处理您的请求。"
+    for msg in reversed(messages):
+        if isinstance(msg, AIMessage) and not msg.tool_calls:
+            final_response = msg.content
+            break
 
-    elif intent == "shipping_tracking" and "track_shipment" in tool_results:
-        response = f"物流信息如下：\n\n{tool_results['track_shipment']}"
+    # 从 ToolMessage 里收集工具结果（给 API 返回用）
+    tool_results = {}
+    for msg in messages:
+        if hasattr(msg, "name") and msg.name and hasattr(msg, "content"):
+            tool_results[msg.name] = msg.content
 
-    elif intent == "return_request" and "check_return_eligibility" in tool_results:
-        result = tool_results["check_return_eligibility"]
-        if "✅" in result:
-            response = f"{result}\n\n是否需要为您发起订单 {order_id} 的退货申请？"
-        else:
-            response = result
-
-    elif intent == "return_policy" and "get_return_policy" in tool_results:
-        response = f"本店退货政策如下：\n\n{tool_results['get_return_policy']}"
-
-    elif "error" in tool_results:
-        response = "处理您的请求时遇到问题，请稍后重试。"
-
-    else:
-        response = "我可以帮您查询订单、物流和退货相关信息，请提供更多信息。"
-
-    return {"final_response": response}
+    return {"final_response": final_response, "tool_results": tool_results}
 
 
 # ── 路由函数 ────────────────────────────────────────────────
@@ -196,4 +151,14 @@ def should_use_tools(state: AgentState) -> str:
     intent = state.get("intent", "general")
     if intent in ("order_status", "shipping_tracking", "return_request", "return_policy"):
         return "tools"
+    return "response"
+
+
+def should_continue(state: AgentState) -> str:
+    """条件边：Agent 调完工具以后，判断是否还需要继续调工具"""
+    last_message = state["messages"][-1]
+    # 如果 AI 消息里有 tool_calls，说明还要执行工具
+    if hasattr(last_message, "tool_calls") and last_message.tool_calls:
+        return "tools"
+    # 没有 tool_calls，说明 Agent 已经给出最终回答
     return "response"

@@ -1,6 +1,5 @@
 """
 FastAPI 路由 — 提供 /chat 和 /health 接口
-类比 Java: 相当于 @RestController
 """
 import logging
 from fastapi import APIRouter, HTTPException
