@@ -6,10 +6,16 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     # LLM 配置 — 默认 DeepSeek，支持切换 OpenAI
+    deepseek_api_key: str = ""
     openai_api_key: str = ""
     openai_base_url: str = "https://api.deepseek.com/v1"
     model_name: str = "deepseek-chat"
     temperature: float = 0.0
+
+    @property
+    def effective_api_key(self) -> str:
+        """优先使用 DEEPSEEK_API_KEY，否则用 OPENAI_API_KEY"""
+        return self.deepseek_api_key or self.openai_api_key
 
     # API 服务配置
     api_host: str = "0.0.0.0"

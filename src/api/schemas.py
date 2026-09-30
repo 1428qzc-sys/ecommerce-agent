@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 class ChatRequest(BaseModel):
     message: str = Field(..., description="用户消息", min_length=1)
     session_id: str = Field(default="default", description="会话 ID（用于多轮对话）")
+    history: list = Field(default_factory=list, description="对话历史，格式 [{role, content}]")
 
 
 class ChatResponse(BaseModel):

@@ -3,7 +3,7 @@ FastAPI 路由 — 提供 /chat 和 /health 接口
 """
 import logging
 from fastapi import APIRouter, HTTPException
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, AIMessage
 
 from src.api.schemas import ChatRequest, ChatResponse, HealthResponse
 from src.agent.graph import graph
@@ -17,8 +17,21 @@ router = APIRouter(prefix="/api/v1")
 async def chat(request: ChatRequest):
     """处理用户消息，返回 Agent 回复"""
     try:
+        # 从历史消息 + 新消息构建完整对话上下文
+        # 注意：只接受 human/ai 角色，忽略 tool 角色，避免 DeepSeek API 对 ToolMessage 顺序的严格要求
+        messages = []
+        for msg in request.history:
+            role = msg.get("role", "human")
+            content = msg.get("content", "")
+            if role == "ai":
+                messages.append(AIMessage(content=content))
+            elif role == "human":
+                messages.append(HumanMessage(content=content))
+            # 忽略 tool 等其他角色
+        messages.append(HumanMessage(content=request.message))
+
         initial_state: AgentState = {
-            "messages": [HumanMessage(content=request.message)],
+            "messages": messages,
             "intent": "",
             "order_id": "",
             "tracking_number": "",
