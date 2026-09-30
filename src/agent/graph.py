@@ -12,7 +12,7 @@ from langgraph.graph import StateGraph, START, END
 from src.agent.state import AgentState
 from src.agent.nodes import (
     triage_node, agent_node, tool_executor, response_node,
-    should_use_tools, should_continue, MAX_RETRIES,
+    should_use_tools, should_continue,
 )
 
 

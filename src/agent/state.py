@@ -16,5 +16,5 @@ class AgentState(TypedDict):
     customer_email: str                  # 提取到的客户邮箱
     tool_results: Dict[str, Any]        # 工具调用结果
     final_response: str                  # 最终回复文本
-    retry_count: int                     # 重试次数（防止死循环）
+    retry_count: int                     # Agent-工具循环次数（防死循环）
     error_message: Optional[str]         # 错误信息

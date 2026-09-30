@@ -23,11 +23,11 @@ from src.agent.tools import (
 
 logger = logging.getLogger(__name__)
 
-# ── LLM 初始化 ──────────────────────────────────────────────
+# ── LLM 初始化 ─────────────────────────────────────────────
 llm = ChatOpenAI(
     model=settings.model_name,
     temperature=settings.temperature,
-    api_key=settings.openai_api_key or "not-set",
+    api_key=settings.effective_api_key or "not-set",
     base_url=settings.openai_base_url,
 )
 
@@ -44,7 +44,10 @@ tool_executor = ToolNode(ALL_TOOLS)
 def agent_node(state: AgentState) -> dict:
     """Agent 节点：LLM 看到所有消息，自己决定调哪个工具、传什么参数"""
     response = llm_with_tools.invoke(state["messages"])
-    return {"messages": [response]}
+    return {
+        "messages": [response],
+        "retry_count": state.get("retry_count", 0) + 1,
+    }
 
 
 # ── 意图识别 Prompt ──────────────────────────────────────────
@@ -64,7 +67,8 @@ TRIAGE_SYSTEM = """你是一个电商客服 Agent 的意图分类器。
 严格按以下 JSON 格式回复（不要 markdown，不要多余文字）：
 {"intent": "<intent>", "order_id": "<id or empty>", "tracking_number": "<num or empty>", "customer_email": "<email or empty>"}"""
 
-MAX_RETRIES = 3
+# Agent 单轮最多执行几轮「思考 → 调工具」，防止模型反复调用工具陷入死循环
+MAX_ITERATIONS = 5
 
 
 # ── 节点 1: 意图识别 ────────────────────────────────────────
@@ -126,7 +130,11 @@ def _fallback_extract(text: str) -> dict:
 
 # ── 节点 2: 回复生成 ────────────────────────────────────────
 def response_node(state: AgentState) -> dict:
-    """从 Agent 的消息历史中提取最终回复，同时收集工具调用结果给 API"""
+    """从 Agent 的消息历史中提取最终回复，同时收集工具调用结果给 API
+
+    工具结果统一合并进 AI 回复的 content，不再单独保留工具消息，
+    使 messages 列表中只出现 HumanMessage 和 AIMessage。
+    """
     messages = state.get("messages", [])
 
     # 从 messages 里找到最后一条 AI 回复（没有 tool_calls 的那种）
@@ -136,11 +144,20 @@ def response_node(state: AgentState) -> dict:
             final_response = msg.content
             break
 
-    # 从 ToolMessage 里收集工具结果（给 API 返回用）
+    # 从 ToolMessage 里收集工具结果
     tool_results = {}
     for msg in messages:
         if hasattr(msg, "name") and msg.name and hasattr(msg, "content"):
             tool_results[msg.name] = msg.content
+
+    # 如果有工具结果，把它的关键信息拼到 final_response 里
+    # 这样下次 LLM 看到这条消息时，能从 content 里读到工具返回的数据
+    if tool_results:
+        tool_summary = "\n".join(f"[{name}: {content}]" for name, content in tool_results.items())
+        if final_response:
+            final_response = f"{final_response}\n\n{tool_summary}"
+        else:
+            final_response = tool_summary
 
     return {"final_response": final_response, "tool_results": tool_results}
 
@@ -156,6 +173,11 @@ def should_use_tools(state: AgentState) -> str:
 
 def should_continue(state: AgentState) -> str:
     """条件边：Agent 调完工具以后，判断是否还需要继续调工具"""
+    # 超过最大循环次数，强制走回复（防止死循环）
+    if state.get("retry_count", 0) >= MAX_ITERATIONS:
+        logger.warning("Agent reached MAX_ITERATIONS (%d), forcing response", MAX_ITERATIONS)
+        return "response"
+
     last_message = state["messages"][-1]
     # 如果 AI 消息里有 tool_calls，说明还要执行工具
     if hasattr(last_message, "tool_calls") and last_message.tool_calls:
