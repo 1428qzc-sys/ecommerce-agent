@@ -1,0 +1,38 @@
+services:
+  # 后端接口：FastAPI
+  api:
+    build: .
+    container_name: ecommerce-agent-api
+    command: uvicorn src.main:app --host 0.0.0.0 --port 8000
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+    # 聊天记录与业务数据都存在这个目录，挂出来避免容器重建就丢
+    volumes:
+      - ./src/services:/app/src/services
+    # 健康检查：每 10 秒探一次后端存活接口，前端依赖它“真正可用”再启动
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+    restart: unless-stopped
+
+  # 前端界面：Streamlit
+  web:
+    build: .
+    container_name: ecommerce-agent-web
+    command: streamlit run src/ui/streamlit_app.py --server.port 8501 --server.address 0.0.0.0
+    env_file:
+      - .env
+    environment:
+      # 容器里不能用 localhost，要用 compose 的服务名
+      API_BASE_URL: http://api:8000
+    ports:
+      - "8501:8501"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
