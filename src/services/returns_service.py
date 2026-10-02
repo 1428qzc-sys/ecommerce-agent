@@ -4,6 +4,14 @@ Returns Service — 退货处理
 import uuid
 from datetime import datetime
 
+# 退货单状态：数据库存编码，对外展示用中文
+RETURN_STATUS_LABELS = {
+    "pending": "待审核",
+    "approved": "已通过",
+    "rejected": "已驳回",
+    "completed": "已完成",
+}
+
 
 class ReturnInfo:
     def __init__(self, rma_number, order_id, status, reason, refund_amount, created_at):
@@ -13,6 +21,11 @@ class ReturnInfo:
         self.reason = reason
         self.refund_amount = refund_amount
         self.created_at = created_at
+
+
+def return_status_text(status: str) -> str:
+    """把退货单状态编码转成中文文案；未知编码原样返回，避免把空值吞掉"""
+    return RETURN_STATUS_LABELS.get(status, status)
 
 
 class ReturnsService:

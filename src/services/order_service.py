@@ -4,6 +4,20 @@ Order Service — 订单查询与退货判断
 from datetime import datetime, timedelta
 from src.services.database import get_session, Order, OrderItem, Customer
 
+# 订单状态：数据库存编码，对外展示用中文
+ORDER_STATUS_LABELS = {
+    "pending": "待付款",
+    "processing": "处理中",
+    "shipped": "已发货",
+    "delivered": "已送达",
+    "cancelled": "已取消",
+}
+
+
+def order_status_text(status: str) -> str:
+    """把订单状态编码转成中文文案；未知编码原样返回，避免把空值吞掉"""
+    return ORDER_STATUS_LABELS.get(status, status)
+
 
 class OrderItemInfo:
     def __init__(self, product_name, quantity, price):
