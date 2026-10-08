@@ -1,0 +1,186 @@
+"""
+单元测试与集成测试 — 不依赖外部大模型服务即可运行
+运行: pytest tests/ -v
+"""
+import pytest
+from src.services.database import init_db
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _setup_database():
+    """所有测试前初始化数据库"""
+    init_db()
+
+
+# ── Service 层测试 ────────────────────────────────────────────
+
+class TestOrderService:
+    def test_get_existing_order(self):
+        from src.services.order_service import OrderService
+        svc = OrderService()
+        order = svc.get_order("ORD-1001")
+        assert order is not None
+        assert order.customer_name == "James Wilson"
+        assert order.status == "delivered"
+        assert len(order.items) == 2
+
+    def test_get_missing_order(self):
+        from src.services.order_service import OrderService
+        svc = OrderService()
+        order = svc.get_order("ORD-9999")
+        assert order is None
+
+    def test_get_orders_by_email(self):
+        from src.services.order_service import OrderService
+        svc = OrderService()
+        orders = svc.get_orders_by_email("james@example.com")
+        assert len(orders) >= 1
+        assert any(o.order_id == "ORD-1001" for o in orders)
+
+    def test_search_orders_by_name(self):
+        from src.services.order_service import OrderService
+        svc = OrderService()
+        results = svc.search_orders("James")
+        assert len(results) >= 2
+
+    def test_search_orders_by_product(self):
+        from src.services.order_service import OrderService
+        svc = OrderService()
+        results = svc.search_orders("Headphones")
+        assert len(results) >= 1
+
+    def test_get_all_orders(self):
+        from src.services.order_service import OrderService
+        svc = OrderService()
+        orders = svc.get_all_orders()
+        assert len(orders) == 12
+
+    def test_can_return_delivered_order(self):
+        from src.services.order_service import OrderService
+        svc = OrderService()
+        can, msg = svc.can_return("ORD-1001")
+        assert can is True
+
+    def test_cannot_return_cancelled_order(self):
+        from src.services.order_service import OrderService
+        svc = OrderService()
+        can, msg = svc.can_return("ORD-1004")
+        assert can is False
+        assert "取消" in msg
+
+    def test_cannot_return_unshipped_order(self):
+        from src.services.order_service import OrderService
+        svc = OrderService()
+        can, msg = svc.can_return("ORD-1003")
+        assert can is False
+
+    def test_cannot_return_expired_order(self):
+        from src.services.order_service import OrderService
+        svc = OrderService()
+        can, msg = svc.can_return("ORD-1008")
+        assert can is False
+        assert "14" in msg
+
+
+class TestShippingService:
+    def test_track_existing(self):
+        from src.services.shipping_service import ShippingService
+        svc = ShippingService()
+        shipment = svc.track("SF-78901234")
+        assert shipment is not None
+        assert shipment.carrier == "顺丰速运"
+        assert shipment.status == "delivered"
+
+    def test_track_missing(self):
+        from src.services.shipping_service import ShippingService
+        svc = ShippingService()
+        shipment = svc.track("XXX-00000000")
+        assert shipment is None
+
+    def test_readable_status(self):
+        from src.services.shipping_service import ShippingService
+        svc = ShippingService()
+        status = svc.get_readable_status("SF-78901234")
+        assert "已签收" in status
+        assert "顺丰速运" in status
+
+
+class TestReturnsService:
+    def test_create_return(self):
+        from src.services.returns_service import ReturnsService
+        svc = ReturnsService()
+        ret = svc.create_return("ORD-1001", "defective", 105.97)
+        assert ret.rma_number.startswith("RMA-")
+        assert ret.status == "approved"
+        assert ret.refund_amount == 105.97
+
+    def test_get_policy(self):
+        from src.services.returns_service import ReturnsService
+        svc = ReturnsService()
+        policy = svc.get_policy()
+        assert "14天" in policy
+
+
+# ── Agent Tool 测试 ───────────────────────────────────────────
+
+class TestAgentTools:
+    def test_lookup_order(self):
+        from src.agent.tools import lookup_order
+        result = lookup_order.invoke({"order_id": "ORD-1001"})
+        assert "ORD-1001" in result
+        assert "James Wilson" in result
+        assert "¥" in result
+
+    def test_lookup_missing_order(self):
+        from src.agent.tools import lookup_order
+        result = lookup_order.invoke({"order_id": "ORD-XXXX"})
+        assert "未找到" in result
+
+    def test_track_shipment(self):
+        from src.agent.tools import track_shipment
+        result = track_shipment.invoke({"tracking_number": "ZT-45678901"})
+        assert "中通快递" in result
+        assert "运输中" in result
+
+    def test_get_return_policy(self):
+        from src.agent.tools import get_return_policy
+        result = get_return_policy.invoke({})
+        assert "14天" in result
+
+    def test_check_return_eligibility(self):
+        from src.agent.tools import check_return_eligibility
+        result = check_return_eligibility.invoke({"order_id": "ORD-1001"})
+        assert "✅" in result
+
+
+# ── Graph 结构测试 ────────────────────────────────────────────
+
+class TestGraph:
+    def test_graph_builds(self):
+        from src.agent.graph import build_graph
+        graph = build_graph()
+        assert graph is not None
+
+    def test_graph_has_nodes(self):
+        from src.agent.graph import build_graph
+        graph = build_graph()
+        nodes = graph.get_graph().nodes
+        assert "triage" in nodes
+        assert "supervisor" in nodes
+        assert "order_specialist" in nodes
+        assert "return_specialist" in nodes
+        assert "general_specialist" in nodes
+        assert "order_tools" in nodes
+        assert "return_tools" in nodes
+        assert "response" in nodes
+
+    def test_specialists_only_get_own_tools(self):
+        """每个专员只拿到自己业务域的工具，两组之间不能有任何重叠"""
+        from src.agent.tools import SPECIALIST_TOOLS
+        order_names = {t.name for t in SPECIALIST_TOOLS["order_specialist"]}
+        return_names = {t.name for t in SPECIALIST_TOOLS["return_specialist"]}
+
+        assert len(order_names) == 4
+        assert len(return_names) == 3
+        assert SPECIALIST_TOOLS["general_specialist"] == []
+        assert not (order_names & return_names)
