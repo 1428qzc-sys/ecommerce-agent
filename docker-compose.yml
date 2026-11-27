@@ -1,4 +1,23 @@
 services:
+  # PostgreSQL：业务表和会话表都放这里
+  db:
+    image: postgres:16-alpine
+    container_name: ecommerce-agent-db
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: ecommerce_agent
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d ecommerce_agent"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
   # 后端接口：FastAPI
   api:
     build: .
@@ -6,12 +25,14 @@ services:
     command: uvicorn src.main:app --host 0.0.0.0 --port 8000
     env_file:
       - .env
+    environment:
+      # 容器里不能用 localhost，要用 compose 的服务名 db
+      DATABASE_URL: postgresql+psycopg://postgres:postgres@db:5432/ecommerce_agent
     ports:
       - "8000:8000"
-    # 聊天记录与业务数据都存在这个目录，挂出来避免容器重建就丢
-    volumes:
-      - ./src/services:/app/src/services
-    # 健康检查：每 10 秒探一次后端存活接口，前端依赖它“真正可用”再启动
+    depends_on:
+      db:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health', timeout=3)"]
       interval: 10s
@@ -20,19 +41,17 @@ services:
       start_period: 20s
     restart: unless-stopped
 
-  # 前端界面：Streamlit
+  # 前端界面：Vue 3 + Vite 打包后由 nginx 提供静态服务，/api 反向代理到后端
   web:
-    build: .
+    build:
+      context: ./frontend
     container_name: ecommerce-agent-web
-    command: streamlit run src/ui/streamlit_app.py --server.port 8501 --server.address 0.0.0.0
-    env_file:
-      - .env
-    environment:
-      # 容器里不能用 localhost，要用 compose 的服务名
-      API_BASE_URL: http://api:8000
     ports:
-      - "8501:8501"
+      - "5173:80"
     depends_on:
       api:
         condition: service_healthy
     restart: unless-stopped
+
+volumes:
+  pgdata:

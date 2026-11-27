@@ -8,8 +8,8 @@ from src.services.database import init_db
 
 @pytest.fixture(scope="module", autouse=True)
 def _setup_database():
-    """所有测试前初始化数据库"""
-    init_db()
+    """所有测试前重置数据库，保证种子数据数量固定"""
+    init_db(reset=True)
 
 
 # ── Service 层测试 ────────────────────────────────────────────
