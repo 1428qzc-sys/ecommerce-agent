@@ -80,16 +80,34 @@ async def chat(request: ChatRequest):
 
 
 # ── 流式输出（SSE）───────────────────────────────────────────────
-# 节点开始执行时，给前端的中文进度提示
-NODE_PROGRESS = {
-    "triage": "正在识别您的意图...",
-    "supervisor": "正在为您分配专员...",
-    "order_specialist": "订单专员正在处理...",
-    "return_specialist": "退货专员正在处理...",
-    "general_specialist": "客服正在回复...",
-    "order_tools": "正在查询订单与物流数据...",
-    "return_tools": "正在查询退货相关数据...",
-    "response": "正在整理回复...",
+# 执行轨迹的中文标签：图节点 → (角色, 阶段, 动作说明)
+# 前端据此渲染「Agent 执行轨迹」，把多智能体协作过程呈现出来
+AGENT_LABELS = {
+    "triage":            ("意图识别",       "analyze",     "正在识别您的意图..."),
+    "supervisor":        ("调度主管",       "dispatch",    "正在为您分配专员..."),
+    "order_specialist":  ("订单与物流专员", "specialist",  "订单专员正在处理..."),
+    "return_specialist": ("退换货专员",     "specialist",  "退货专员正在处理..."),
+    "general_specialist":("前台接待",       "specialist",  "客服正在回复..."),
+    "order_tools":       ("订单与物流专员", "tool",        "正在查询订单与物流数据..."),
+    "return_tools":      ("退换货专员",     "tool",        "正在查询退货相关数据..."),
+    "response":          ("系统",           "final",       "正在整理回复..."),
+}
+
+# 工具内部名 → 给用户看的中文名
+TOOL_LABELS = {
+    "lookup_order": "查询订单详情",
+    "lookup_orders_by_email": "按邮箱查订单",
+    "search_orders": "搜索订单",
+    "track_shipment": "查询物流进度",
+    "get_return_policy": "查询退货政策",
+    "check_return_eligibility": "校验退货资格",
+    "initiate_return": "创建退货申请",
+}
+
+SPECIALIST_LABELS = {
+    "order_specialist": "订单与物流专员",
+    "return_specialist": "退换货专员",
+    "general_specialist": "前台接待",
 }
 
 # 只有这三个专员的模型输出才会逐字推给用户
@@ -111,22 +129,37 @@ def _sse(payload: dict) -> str:
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
+def _tool_identity(event: dict) -> tuple[str, str]:
+    """工具事件里工具名藏在哪几个字段因版本而异，统一取出来"""
+    name = event.get("name") or ""
+    if not name:
+        name = event.get("metadata", {}).get("langgraph_tool_name", "")
+    return name, TOOL_LABELS.get(name, name)
+
+
 async def _stream_reply(session_id: str, current_message: str):
     """
-    边跑边推的生成器：先推执行进度，再把模型回复逐字推给前端。
+    边跑边推的生成器：把 Agent 图的执行过程逐步推给前端。
 
-    事件分两类：
-      - progress：节点开始干活 / 意图识别完成，让用户知道"它在干嘛"
-      - token：agent 节点生成的回复正文，打字机效果
+    事件三类：
+      - trace ：执行轨迹的一步（谁在干、调哪个工具、传了什么、返回什么）
+      - token ：专员模型输出的正文，打字机效果
+      - done  ：跑完落库后的完整回复
 
-    注意只有 agent 节点的模型输出会当 token 推出去——
-    triage 节点输出的是意图分类 JSON，不能把原文给用户看。
+    只有专员节点的模型输出会当 token 推出去——
+    triage 输出的是意图 JSON、主管输出的是派单 JSON，都不能给用户看。
 
     落库时机仍然坚持「跑完才存」：等所有字块推完、拼出完整回复
     之后再 save_turn，保证库里存的永远是完整的问答对。
     """
     messages = _build_messages(session_id, current_message)
     chunks: list[str] = []
+    last_start_node = ""   # 同一节点连续两次 start 时去重（LangGraph 会重复推）
+
+    def emit_trace(phase: str, agent: str, content: str, **extra):
+        payload = {"type": "trace", "phase": phase, "agent": agent, "content": content}
+        payload.update(extra)
+        return _sse(payload)
 
     try:
         async for event in graph.astream_events(
@@ -135,9 +168,13 @@ async def _stream_reply(session_id: str, current_message: str):
             node = event.get("metadata", {}).get("langgraph_node", "")
             kind = event["event"]
 
-            # 1) 节点开始执行 → 推一条进度提示
-            if kind == "on_chain_start" and node in NODE_PROGRESS:
-                yield _sse({"type": "progress", "node": node, "content": NODE_PROGRESS[node]})
+            # 1) 节点开始执行 → 一条轨迹（含角色和阶段）
+            # LangGraph 对同一节点会连推两次 start，这里去重，避免轨迹里刷重复行
+            if kind == "on_chain_start" and node in AGENT_LABELS:
+                if node != last_start_node:
+                    agent, phase, desc = AGENT_LABELS[node]
+                    yield emit_trace(phase, agent, desc, node=node)
+                last_start_node = node
 
             # 2) 意图识别完成 → 用中文告诉用户识别到了什么
             elif kind == "on_chain_end" and node == "triage":
@@ -146,9 +183,54 @@ async def _stream_reply(session_id: str, current_message: str):
                     intent = output.get("intent", "")
                     if intent:
                         label = INTENT_LABELS.get(intent, intent)
-                        yield _sse({"type": "progress", "node": node, "content": f"识别到：{label}"})
+                        entities = [
+                            f"{k}={output[k]}"
+                            for k in ("order_id", "tracking_number", "customer_email")
+                            if output.get(k)
+                        ]
+                        detail = f"识别到：{label}"
+                        if entities:
+                            detail += "（提取实体：" + "、".join(entities) + "）"
+                        yield emit_trace("analyze", "意图识别", detail, node=node)
 
-            # 3) 专员节点的模型输出 → 逐字推给用户
+            # 3) 主管派单决策 → 揭示调度过程，让「多智能体」看得见
+            elif kind == "on_chain_end" and node == "supervisor":
+                output = event["data"].get("output")
+                if isinstance(output, dict):
+                    target = output.get("next", "")
+                    if target and target != "FINISH":
+                        agent_name = SPECIALIST_LABELS.get(target, target)
+                        task = output.get("task", "")
+                        detail = f"主管派单 → {agent_name}"
+                        if task:
+                            detail += f"，任务：{task}"
+                        yield emit_trace("dispatch", "调度主管", detail, node=node, target=target)
+                    elif target == "FINISH":
+                        yield emit_trace("dispatch", "调度主管", "主管判定：可以收尾", node=node, target="FINISH")
+
+            # 4) 工具调用开始 → 工具名 + 入参
+            elif kind == "on_tool_start":
+                tool_name, tool_label = _tool_identity(event)
+                if tool_name:
+                    raw_input = event["data"].get("input")
+                    args = raw_input if isinstance(raw_input, dict) else {"输入": str(raw_input)}
+                    agent = AGENT_LABELS.get(node, ("专员",))[0]
+                    yield emit_trace("tool", agent, f"调用工具：{tool_label}", node=node,
+                                     tool=tool_name, tool_label=tool_label, args=args)
+
+            # 5) 工具调用结束 → 返回结果（截断，避免刷屏）
+            elif kind == "on_tool_end":
+                tool_name, tool_label = _tool_identity(event)
+                if tool_name:
+                    raw_output = event["data"].get("output")
+                    result = str(raw_output) if raw_output is not None else ""
+                    if len(result) > 400:
+                        result = result[:400] + "…"
+                    agent = AGENT_LABELS.get(node, ("专员",))[0]
+                    yield emit_trace("tool_result", agent, f"工具返回：{tool_label}", node=node,
+                                     tool=tool_name, tool_label=tool_label, result=result)
+
+            # 6) 专员节点的模型输出 → 逐字推给用户
             elif kind == "on_chat_model_stream" and node in SPECIALIST_NODES:
                 text = event["data"]["chunk"].content
                 if not text:
