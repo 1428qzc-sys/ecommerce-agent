@@ -1,10 +1,14 @@
 """
-Database — SQLite 数据库初始化 + 种子数据
+Database — PostgreSQL 数据库初始化 + 种子数据
+
+连接方式由 DATABASE_URL 决定，默认指向本地 PostgreSQL 的 ecommerce_agent 库。
+表结构用 SQLAlchemy 定义，切库不需要改业务代码。
 """
-import os
-from sqlalchemy import create_engine, Column, String, Float, DateTime, ForeignKey, Text
+from sqlalchemy import create_engine, Column, String, Float, DateTime, ForeignKey, func
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 from datetime import datetime, timedelta
+
+from src.config import settings
 
 Base = declarative_base()
 
@@ -52,8 +56,8 @@ class Shipment(Base):
 
 
 # ── 数据库引擎 ──────────────────────────────────────────────
-DB_PATH = os.path.join(os.path.dirname(__file__), "ecommerce.db")
-engine = create_engine(f"sqlite:///{DB_PATH}", echo=False)
+# pool_pre_ping：连接断开后自动重连，避免长时间空闲后第一次请求失败
+engine = create_engine(settings.database_url, echo=False, pool_pre_ping=True)
 SessionLocal = sessionmaker(bind=engine)
 
 
@@ -61,11 +65,24 @@ def get_session():
     return SessionLocal()
 
 
-def init_db():
-    """建表 + 填充种子数据（幂等：先删后建）"""
-    Base.metadata.drop_all(engine)
+def init_db(reset: bool = False):
+    """
+    建表 + 填充种子数据。
+
+    默认幂等：表已存在且有数据就什么都不做，不会把论文演示数据清掉。
+    reset=True 时才删表重建；也可以用环境变量 RESET_DB_ON_START=true 在启动时重置。
+    """
+    if reset or settings.reset_db_on_start:
+        Base.metadata.drop_all(engine)
     Base.metadata.create_all(engine)
-    _seed()
+
+    session = get_session()
+    try:
+        count = session.query(func.count(Customer.id)).scalar() or 0
+    finally:
+        session.close()
+    if count == 0:
+        _seed()
 
 
 def _seed():
@@ -81,6 +98,8 @@ def _seed():
         Customer(id="C004", name="Emily Davis", email="emily@example.com", phone="555-0104"),
     ]
     session.add_all(customers)
+    # PostgreSQL 会校验外键，先把客户落库再插依赖它的订单
+    session.flush()
 
     # 订单（各种状态：delivered / shipped / pending / cancelled / returned）
     orders = [
@@ -110,6 +129,8 @@ def _seed():
               order_date=now - timedelta(days=12), delivery_date=now - timedelta(days=7)),
     ]
     session.add_all(orders)
+    # Shipment 没建 ORM 关系，SQLAlchemy 无法自动排序，这里手动保证订单先落库
+    session.flush()
 
     # 订单商品
     items = [

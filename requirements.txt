@@ -9,12 +9,9 @@ pydantic-settings>=2.0
 fastapi>=0.115.0
 uvicorn>=0.30.0
 
-# Database
+# Database (PostgreSQL)
 sqlalchemy>=2.0
-
-# UI
-streamlit>=1.38.0
-requests>=2.31.0
+psycopg[binary]>=3.1.0
 
 # Observability (optional)
 langfuse>=2.0.0
